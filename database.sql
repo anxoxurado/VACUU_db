@@ -1,4 +1,3 @@
-
 create database VACUU;
 use VACUU;
 
@@ -58,8 +57,8 @@ create table usuario_cupon(
 
 );
 
-/* INSERTAR DATOS  */
-
+/* INSERTAR DATOS 
+*/
 
 INSERT INTO categorias(nombre_categoria, descripcion)
 VALUES
@@ -412,157 +411,102 @@ VALUES
 (15, 90, '2024-08-25');
 
 
--- Indices
-/*
--- Se crea un indice para el nombre de usuarios, para así, poder encontrar más rapido buscando usuarios unicos,
-tambien se creará una similar para establecimientos.
+-- Vistas
+create view lugares_cafeterias as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 1;
+create view lugares_bares as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 2;
+create view lugares_restaurantes as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 3;
+create view lugares_tiendas_ropa as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 4;
 
-*/
+-- Indices
 create index usr_idx on usuarios (username);
 create index correo_idx on usuarios (correo_electronico);
-
 create index empr_idx on empresarios (user_name);
 create index emprCorreo_idx on empresarios (correo);
-
 create index establecimiento_idx on establecimientos (nombre_local);
-
 create index cupones_idx on cupones (codigo);
 
-/*
-Funciones de agregado
-*/
-
-/*
-1.- Cupones activos
-*/
-select codigo, (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as establecimiento, fecha_vencimiento
-from cupones where fecha_vencimiento > '2024-06-10';
-
-/*
-2.- Cupones usados
-En este consulta puede parecer un simple 'select * from usuario_cupon', pero se está haciendo uso de una subquery para enlazar directamente un cupon usado con un username
-*/
-select (select codigo from cupones where id_cupon = fk_cupon) as codigo_cupon, (select username from usuarios where id_usuario = fk_usuario) as User, fecha_uso
-from usuario_cupon;
-
-/*
-1.- ¿Cuantos establecimientos tenemos?
-*/
-select count(id_establecimiento)as Cant_establecimientos from establecimientos;
-
-/*
-2.- ¿Cuantos establecimientos de cada categoria tenemos?
-*/
-select (select nombre_categoria from categorias where id_categoria = fk_categoria) as categoria, count(id_establecimiento)as Cant_establecimientos 
-from establecimientos
-group by fk_categoria;
-
-/*
-3.- ¿Cuantos establecimientos tiene cada empresario?
-*/
-select (select nombre_empresario from empresarios where id_empresario = fk_empresario) as Empresario, count(id_establecimiento) as Cant_establecimientos
-from establecimientos
-group by fk_empresario;
-
-/*
-4.- ¿Cuantos usuarios hay registrados?
-*/
-select count(id_usuario) Cant_users from usuarios;
-
-/*
-5.- ¿Cuantos cupones han usado cada usuario?
-*/
-select (select username from usuarios where id_usuario = fk_usuario) as User, count(fk_usuario) as Cupones_usados
+-- Subconsultas
+-- Cupones utilizados por cada usuario
+select 
+  (select username from usuarios where id_usuario = fk_usuario) as Usuario, 
+  count(fk_usuario) as Cupones_usados
 from usuario_cupon
 group by fk_usuario;
 
-/*
-5.- ¿Cuantos cupones no han sido usados?
-*/
-select count(id_cupon) as cuponesNoUsados
+-- Cant de establecimientos por categoria
+select 
+  (select nombre_categoria from categorias where id_categoria = fk_categoria) as categoria, 
+  count(id_establecimiento) as Cant_establecimientos 
+from establecimientos
+group by fk_categoria;
+
+-- ¿Cuál es el promedio de uso de cupones por establecimiento?
+select 
+  e.nombre_local,
+  ifnull((count(uc.id_usuario_cupon) / count(cp.id_cupon)) * 100, 0) as promedioUso
+from 
+  categorias c 
+  inner join establecimientos e on c.id_categoria = e.fk_categoria
+  inner join cupones cp on e.id_establecimiento = cp.fk_establecimiento
+  left join usuario_cupon uc on cp.id_cupon = uc.fk_cupon
+group by 
+  e.nombre_local;
+
+-- Funciones de agregado
+-- ¿Cuál es el descuento promedio de los cupones?
+select avg(descuento_mxn) as PromedioDescuento
+from cupones;
+
+-- ¿Cuánto hemos ahorrado a los usuarios?
+select sum(descuento_mxn) as Ahorrado
 from cupones
-where id_cupon not in (select fk_cupon from usuario_cupon);
+where id_cupon in (select fk_cupon from usuario_cupon);
 
-/*
-6.- ¿Cupon con mas tiempo de vigencia en el futuro?
-falta refinar
-*/
-
-select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Establecimiento, descripcion_cupon, max(fecha_vencimiento) as fechamayor
-from cupones 
-group by id_cupon order by fecha_vencimiento desc limit 1;
-
-/*
-7.- ¿Cupon con mas proximo a vencer en el futuro?
-*/
-
+-- ¿Cuál es el próximo cupón a vencer?
 select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Establecimiento, descripcion_cupon, min(fecha_vencimiento) as fechamayor
 from cupones where fecha_vencimiento > CURDATE()
 group by id_cupon order by fecha_vencimiento asc limit 1;
 
-/*
-ORDENAMIENTO
-*/
+-- ¿Cuál es el cupón con la promoción más alta?
+select max(descuento_mxn) as MaxDescuento, (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Locall
+from cupones group by Locall order by MaxDescuento desc limit 1;
 
-/*
-Cupones ordenados por su fecha de inicio
-*/
-select id_cupon, fecha_inicio
+-- Agrupación
+-- ¿Cuántos establecimientos de cada categoría tenemos?
+select 
+  (select nombre_categoria from categorias where id_categoria = fk_categoria) as categoria, 
+  count(id_establecimiento) as Cant_establecimientos 
+from establecimientos
+group by fk_categoria;
+
+-- ¿Cuántos cupones se utilizan por día de la semana?
+select 
+  dayname(fecha_uso) as dia_semana,
+  count(id_usuario_cupon) as cantidad_cupones 
+from usuario_cupon 
+group by dia_semana;
+
+-- ¿Cuántos cupones hay por mes?
+select 
+  monthname(fecha_inicio) as mes_inicio, 
+  count(id_cupon) as cantidad_cupones 
+from cupones 
+group by mes_inicio;
+
+-- Ordenamiento
+-- Cupones Ordenados por Fecha de Inicio
+select id_cupon, codigo, fecha_inicio
 from cupones
 order by fecha_inicio asc;
 
-/*
-Establecimientos ordenados por categoria y orden alfabetico
-*/
-select nombre_local, (select nombre_categoria from categorias where id_categoria = fk_categoria) as categoria
+-- Establecimientos Ordenados por Categoría y Nombre del Local
+select nombre_local, 
+  (select nombre_categoria from categorias where id_categoria = fk_categoria) as categoria
 from establecimientos
 order by categoria, nombre_local;
 
-/*
-Establecimientos ordenados por dueño y orden alfabetico
-*/
-select  nombre_local, (select nombre_empresario from empresarios where id_empresario = fk_empresario) as empresario
+-- Establecimientos Ordenados por Nombre del Empresario y Luego por Nombre del Local
+select nombre_local, 
+  (select nombre_empresario from empresarios where id_empresario = fk_empresario) as empresario
 from establecimientos
 order by empresario, nombre_local;
-
-/*  VISTAS   */  
-
--- Vista para cafeterias
-create view lugares_cafeterias as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 1;
-select * from lugares_cafeterias;
-
--- Vista para bares
-create view lugares_bares as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 2;
-select * from lugares_bares;
-
-
--- Vista para restaurantes
-create view lugares_restaurantes as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 3;
-select * from lugares_restaurantes;
-
--- vista para tiendas de ropa
-create view lugares_tiendas_ropa as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 4;
-select * from lugares_tiendas_ropa;
-
--- vista para joyerias
-create view lugares_joyerias as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 5;
-select * from lugares_joyerias;
-
-
-/* SUBCONSULTAS  */
-
--- cupones por dia de la semana, por local, dia de la semana, cupones por empresario, 
--- Usuarios po lugares a los que fueron utilizando los cupones que canjearon
-
-
--- cupones por dia de la semana, con su local
-select c.id_cupon, e.id_establecimiento, e.nombre_local, c.fecha_inicio, c.fecha_vencimiento from cupones c, establecimientos e where c.fk_establecimiento = e.id_establecimiento;
-
-
--- cupones por dia de uso
-select dayname(fecha_uso)as dia_semana, count(id_usuario_cupon)as cantidad_cupones from usuario_cupon group by dia_semana;
-
--- cupones por mes de inicio
-select monthname(fecha_inicio) as mes_inicio, count(id_cupon) as cantidad_cupones from cupones group by mes_inicio;
-
-select * from cupones;
