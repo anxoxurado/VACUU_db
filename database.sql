@@ -310,3 +310,28 @@ group by id_cupon limit 1;
 select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Local, descripcion_cupon, min(fecha_vencimiento) as fechamayor
 from cupones where fecha_vencimiento > CURDATE()
 group by id_cupon  order by fecha_vencimiento asc limit 1;
+
+/*
+ORDENAMIENTO
+*/
+
+/*
+Cupones ordenados por su fecha de inicio
+*/
+select id_cupon, fecha_inicio
+from cupones
+order by fecha_inicio asc;
+
+/*
+Establecimientos ordenados por categoria y orden alfabetico
+*/
+select nombre_local, (select nombre_categoria from categorias where id_categoria = fk_categoria) as categoria
+from establecimientos
+order by categoria, nombre_local;
+
+/*
+Establecimientos ordenados por dueño y orden alfabetico
+*/
+select  nombre_local, (select nombre_empresario from empresarios where id_empresario = fk_empresario) as empresario
+from establecimientos
+order by empresario, nombre_local;
