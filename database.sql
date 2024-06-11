@@ -296,20 +296,19 @@ where id_cupon not in (select fk_cupon from usuario_cupon);
 
 /*
 6.- ¿Cupon con mas tiempo de vigencia en el futuro?
-falta refinar
 */
 
-select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Local, descripcion_cupon, min(fecha_vencimiento) as fechamayor
+select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Establecimiento, descripcion_cupon, max(fecha_vencimiento) as fechamayor
 from cupones 
-group by id_cupon limit 1;
+group by id_cupon order by fecha_vencimiento desc limit 1;
 
 /*
 7.- ¿Cupon con mas proximo a vencer en el futuro?
 */
 
-select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Local, descripcion_cupon, min(fecha_vencimiento) as fechamayor
+select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Establecimiento, descripcion_cupon, min(fecha_vencimiento) as fechamayor
 from cupones where fecha_vencimiento > CURDATE()
-group by id_cupon  order by fecha_vencimiento asc limit 1;
+group by id_cupon order by fecha_vencimiento asc limit 1;
 
 /*
 ORDENAMIENTO
