@@ -531,3 +531,42 @@ WHERE id_cupon IN (23, 45, 12, 8, 37);
 select * from registro_cambios_descuento;
 
 -- drop database VACUU_Triggers;
+
+-- DISPARADOR 3 auditoría de eliminación de datos sensibles
+create table auditoria_datos_sensibles(
+id_auditoria int primary key auto_increment,
+accion varchar(45) not null,
+usuario_administrador varchar(45) not null,
+fecha_modificacion timestamp default current_timestamp,
+id_empresario_borrado int not null,
+nombre_empresario varchar(45) not null,
+correo varchar(45) not null,
+user_name varchar(10) not null unique,
+contraseña_empresario varchar(45) not null,
+telefono_empresario varchar(15) not null
+);
+
+drop table auditoria_datos_sensibles;
+
+DELIMITER //
+create trigger auditoria_de_eliminacion_de_datos_sensibles
+after delete on empresarios
+for each row
+begin 
+	insert into auditoria_datos_sensibles (accion, usuario_administrador, id_empresario_borrado, 
+    nombre_empresario, correo, user_name, contraseña_empresario, telefono_empresario)
+    values
+			('DELETE', user(), old.id_empresario, old.nombre_empresario, old.correo, old.user_name, 
+            old.contraseña_empresario, old.telefono_empresario);
+            
+end // 
+DELIMITER ;
+
+select * from auditoria_datos_sensibles;
+
+SELECT * FROM EMPRESARIOS;
+
+insert into empresarios(nombre_empresario, correo, user_name, contraseña_empresario, telefono_empresario)
+values 	('Gerardo Perez', 'dbsdkbe@gmail.com', 'gerardito','bvfjebdjk','6145329859');
+
+delete from empresarios where id_empresario = 16;
