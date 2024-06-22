@@ -1,7 +1,6 @@
-
-create database VACUU;
-use VACUU;
-
+create database VACUU_Triggers;
+use VACUU_Triggers;
+-- drop database VACUU_Triggers;
 CREATE TABLE empresarios (
   id_empresario int not null primary key auto_increment,
   nombre_empresario varchar(45) not null,
@@ -32,12 +31,14 @@ CREATE TABLE empresarios (
   
 create table cupones(
 id_cupon int not null auto_increment primary key,
-codigo varchar(6) not null,
+codigo varchar(7) not null,
 descripcion_cupon varchar(100),
 fecha_inicio date,
 fecha_vencimiento date,
-descuento_mxn float,
+descuento_mxn int,
+cantidad int,
 fk_establecimiento int not null,
+descuento_anterior int,
 foreign key(fk_establecimiento) references establecimientos(id_establecimiento)
 );
 
@@ -49,16 +50,202 @@ contraseña_usuario varchar(30) not null
 );
 
 create table usuario_cupon(
-  id_usuario_cupon int not null auto_increment primary key,
-  fk_usuario int not null,
-  fk_cupon int not null,
-  fecha_uso date,
+  id_usuario_cupon varchar(8) primary key not null,
+  fk_usuario int,
+  fk_cupon int,
+  fecha_registro date,
   foreign key (fk_usuario) references usuarios (id_usuario),
   foreign key (fk_cupon) references cupones (id_cupon)
 
 );
+create unique index idx_unique_code on usuario_cupon(id_usuario_cupon);
 
-/* INSERTAR DATOS  */
+create table alerta(
+	id_alerta int auto_increment primary key,
+    descripcionAlerta varchar(150),
+    fechaAlerta date);
+    
+CREATE TABLE registro_cambios_descuento (
+  id_registro INT AUTO_INCREMENT PRIMARY KEY,
+  id_cupon INT,
+  descuento_anterior INT,
+  descuento_nuevo INT,
+  fecha_cambio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (id_cupon) REFERENCES cupones(id_cupon)
+);
+
+
+
+/* -------------------------------------------------------------------------------------------------------------------------------------  
+												Procedimientos aleatorios
+ -------------------------------------------------------------------------------------------------------------------------------------  */
+DELIMITER $$
+
+DELIMITER $$
+
+CREATE PROCEDURE randomCode(OUT coupon_code VARCHAR(8))
+BEGIN
+    DECLARE codeString VARCHAR(8); 
+    DECLARE counter INT DEFAULT 0;
+    DECLARE charLett VARCHAR(62) DEFAULT 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    DECLARE charSetLength INT DEFAULT 62;
+    DECLARE isOn BOOLEAN DEFAULT TRUE;
+    DECLARE attemptCounter INT DEFAULT 0;
+    DECLARE maxAttempts INT DEFAULT 1000;
+
+    WHILE isOn DO
+        SET codeString = '';
+        SET counter = 0;
+        
+        WHILE counter < 7 DO
+            SET codeString = CONCAT(codeString, SUBSTRING(charLett, FLOOR(RAND() * charSetLength) + 1, 1));
+            IF counter = 2 THEN
+                SET codeString = CONCAT(codeString, '-');
+            END IF;
+            SET counter = counter + 1;
+        END WHILE;
+
+        BEGIN
+            DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+            BEGIN
+                SET attemptCounter = attemptCounter + 1;
+                IF attemptCounter >= maxAttempts THEN
+                    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Failed to generate unique coupon code after maximum attempts';
+                END IF;
+            END;
+
+            IF NOT EXISTS (SELECT 1 FROM usuario_cupon WHERE id_usuario_cupon = codeString) THEN
+                SET coupon_code = codeString;
+                SET isOn = FALSE;
+            END IF;
+        END;
+    END WHILE;
+END $$
+
+DELIMITER ;
+
+
+
+
+
+delimiter $$
+CREATE PROCEDURE randomUser(OUT randomUser INT)
+BEGIN
+    DECLARE randID INT;
+
+    SELECT id_usuario INTO randID FROM usuarios ORDER BY RAND() LIMIT 1;
+    SET randomUser = randID;
+END$$
+
+DELIMITER ;
+
+
+
+/* Este procedimiento retorna un cupon aleatorio el cual no ha sido asignado a ningun usuario todavía */
+delimiter $$
+
+CREATE PROCEDURE randomCupon(OUT randomCouponID VARCHAR(8))
+BEGIN
+   
+	if 1 < (select count(*) from cupones where fecha_vencimiento > now()) then
+    
+		SELECT id_usuario_cupon INTO randomCouponID FROM usuario_cupon where fk_usuario is null ORDER BY RAND() LIMIT 1;
+    
+    end if;
+    
+END $$
+
+DELIMITER ;
+
+
+/* -------------------------------------------------------------------------------------------------------------------------------------  
+												Triggers de asignación
+ -------------------------------------------------------------------------------------------------------------------------------------  */
+
+
+delimiter $$
+
+CREATE TRIGGER assignCoupon
+AFTER INSERT
+ON cupones
+FOR EACH ROW
+BEGIN
+    DECLARE codigoGenerado VARCHAR(8);
+	DECLARE counter int default 0;
+    
+    while counter < new.cantidad do
+    
+		CALL randomCode(codigoGenerado);
+        if not exists (select id_usuario_cupon from usuario_cupon where id_usuario_cupon = codigoGenerado) then 
+			INSERT INTO usuario_cupon (id_usuario_cupon, fk_cupon, fecha_registro)
+				VALUES (codigoGenerado, new.id_cupon, NOW());
+			set counter = counter +1;
+		end if;
+			end while;
+END$$
+
+DELIMITER ;
+
+
+DELIMITER $$
+
+CREATE TRIGGER assignCouponNewUser
+AFTER INSERT ON usuarios
+FOR EACH ROW 
+BEGIN
+    DECLARE cuponAleatorio VARCHAR(8);
+    DECLARE counter INT DEFAULT 0;
+    DECLARE cuponID INT;
+    DECLARE noCupones BOOLEAN DEFAULT FALSE;
+
+    WHILE counter < 3 AND noCupones = FALSE DO
+        SELECT id_usuario_cupon INTO cuponAleatorio
+        FROM usuario_cupon
+        WHERE fk_usuario IS NULL
+        LIMIT 1;
+
+        IF cuponAleatorio IS NOT NULL THEN
+            UPDATE usuario_cupon
+            SET fk_usuario = NEW.id_usuario, 
+                fecha_registro = NOW()
+            WHERE id_usuario_cupon = cuponAleatorio;
+
+        SET counter = counter + 1;
+        ELSE
+            SET noCupones = TRUE;
+            SET counter = 3;
+        END IF;
+
+    END WHILE;
+
+    IF noCupones = TRUE THEN
+        INSERT INTO alerta (descripcionAlerta)
+        VALUES ('No hay suficientes codigos para usuarios, hace falta vender más');
+    END IF;
+END $$
+
+DELIMITER ;
+
+
+DELIMITER $$
+CREATE TRIGGER registrarCambioDescuento
+AFTER UPDATE ON cupones
+FOR EACH ROW
+BEGIN
+  IF NEW.descuento_mxn <> OLD.descuento_mxn THEN
+    INSERT INTO registro_cambios_descuento (id_cupon, descuento_anterior, descuento_nuevo)
+    VALUES (NEW.id_cupon, OLD.descuento_mxn, NEW.descuento_mxn);
+    
+  END IF;
+END$$
+DELIMITER ;
+
+
+
+
+/* -------------------------------------------------------------------------------------------------------------------------------------  
+												Inserción de datos de prueba
+ -------------------------------------------------------------------------------------------------------------------------------------*/
 
 
 INSERT INTO categorias(nombre_categoria, descripcion)
@@ -160,12 +347,142 @@ VALUES
 ('Casual Store', 'Calle 60 #222', 'Centro', '31000', '6123456754', 4, 15);
 
 
+select * from usuarios;
+select * from usuario_cupon;
 INSERT INTO usuarios (username, correo_electronico, contraseña_usuario)
 VALUES
 ('usuario1', 'usuario1@example.com', 'password1'),
 ('usuario2', 'usuario2@example.com', 'password2'),
 ('usuario3', 'usuario3@example.com', 'password3'),
-('usuario4', 'usuario4@example.com', 'password4'),
+('usuario4', 'usuario4@example.com', 'password4');
+
+
+
+INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, cantidad, fk_establecimiento)
+VALUES
+('CUP001', 'Descuento de 50 MXN en Café Vallejo', '2024-06-11', '2024-06-21', 50, 10, 1),
+('CUP002', 'Descuento de 70 MXN en Café Tin Tan', '2024-06-11', '2024-07-01', 70, 20, 2),
+('CUP003', 'Descuento de 100 MXN en Café Kaldi', '2024-06-11', '2024-06-15', 100, 30, 3),
+('CUP004', 'Descuento de 40 MXN en Café Punta del Cielo', '2024-06-11', '2024-07-11', 40, 40, 4),
+('CUP005', 'Descuento de 60 MXN en Café La Antigua Paz', '2024-06-11', '2024-06-13', 60, 50, 5),
+('CUP006', 'Descuento de 80 MXN en Gloria Jeans Coffee', '2024-05-11', '2024-06-04', 80, 10, 6),
+('CUP007', 'Descuento de 90 MXN en Café Colibrí', '2024-04-11', '2024-06-21', 90, 20, 7),
+('CUP008', 'Descuento de 35 MXN en Café DVolada', '2024-06-11', '2024-07-13', 35, 30, 8),
+('CUP009', 'Descuento de 50 MXN en Café Versalles', '2024-06-20', '2024-07-11', 50, 40, 9),
+('CUP010', 'Descuento de 100 MXN en Café Divine', '2024-06-01', '2024-08-12', 100, 50, 10),
+('CUP011', 'Descuento de 60 MXN en El Rincón del Café', '2024-06-11', '2024-06-21', 60, 10, 11),
+('CUP012', 'Descuento de 30 MXN en Café Imperial', '2024-06-11', '2024-07-11', 30, 20, 12),
+('CUP013', 'Descuento de 90 MXN en La Nonna', '2024-06-11', '2024-07-11', 90, 30, 13),
+('CUP014', 'Descuento de 120 MXN en Café Tía Rosa', '2024-06-11', '2024-07-11', 120, 40, 14),
+('CUP015', 'Descuento de 150 MXN en Colonia Café', '2024-06-11', '2024-07-11', 150, 50, 15),
+('CUP016', 'Descuento de 30 MXN en Bar San Luis', '2024-06-11', '2024-06-21', 30, 10, 16),
+('CUP017', 'Descuento de 70 MXN en La Cervecería', '2024-06-11', '2024-07-01', 70, 20, 17),
+('CUP018', 'Descuento de 100 MXN en Bar el Rincón Feliz', '2024-06-11', '2024-06-15', 100, 30, 18),
+('CUP019', 'Descuento de 40 MXN en Patio Centenario', '2024-06-11', '2024-07-11', 40, 40, 19),
+('CUP020', 'Descuento de 60 MXN en Rocket Bar', '2024-06-11', '2024-06-13', 60, 50, 20),
+('CUP021', 'Descuento de 80 MXN en La Terraza de Urlarte', '2024-05-11', '2024-06-04', 80, 10, 21),
+('CUP022', 'Descuento de 90 MXN en Jarrita Tapatía', '2024-04-11', '2024-06-21', 90, 20, 22),
+('CUP023', 'Descuento de 35 MXN en La Antigua Paz Bar', '2024-06-11', '2024-07-13', 35, 30, 23),
+('CUP024', 'Descuento de 50 MXN en Bar Alaska', '2024-06-20', '2024-07-11', 50, 40, 24),
+('CUP025', 'Descuento de 100 MXN en El Aljibe Bar', '2024-06-01', '2024-08-12', 100, 50, 25),
+('CUP026', 'Descuento de 135 MXN en Esquina del Rock', '2024-06-11', '2024-06-25', 135, 10, 26),
+('CUP027', 'Descuento de 40 MXN en El Desván', '2024-06-11', '2024-07-05', 40, 20, 27),
+('CUP028', 'Descuento de 90 MXN en Bar La Oficina', '2024-06-11', '2024-06-20', 90, 30, 28),
+('CUP029', 'Descuento de 75 MXN en Bar Dublin', '2024-06-11', '2024-07-01', 75, 40, 29),
+('CUP030', 'Descuento de 50 MXN en Bar Hamburgueses', '2024-06-11', '2024-06-30', 50, 50, 30),
+('CUP031', 'Descuento de 60 MXN en La Casona', '2024-06-11', '2024-06-20', 60, 10, 31),
+('CUP032', 'Descuento de 120 MXN en La Casa de los Milagros', '2024-06-11', '2024-07-01', 120, 20, 32),
+('CUP033', 'Descuento de 50 MXN en Il Fornaio', '2024-06-11', '2024-06-25', 50, 30, 33),
+('CUP034', 'Descuento de 90 MXN en Pollo Feliz Centro', '2024-06-11', '2024-07-05', 90, 40, 34),
+('CUP035', 'Descuento de 70 MXN en Mesón de Catedral', '2024-06-11', '2024-06-20', 70, 50, 35),
+('CUP036', 'Descuento de 75 MXN en El Hojaldre', '2024-06-11', '2024-07-01', 75, 10, 36),
+('CUP037', 'Descuento de 40 MXN en El Retablo', '2024-06-11', '2024-06-30', 40, 20, 37),
+('CUP038', 'Descuento de 85 MXN en El Sabor de Oaxaca', '2024-06-11', '2024-07-20', 85, 30, 38),
+('CUP039', 'Descuento de 55 MXN en Comedor Familiar', '2024-06-11', '2024-06-25', 55, 40, 39),
+('CUP040', 'Descuento de 60 MXN en Taquería La Suriana', '2024-06-11', '2024-07-01', 60, 50, 40),
+('CUP041', 'Descuento de 130 MXN en La Sierra', '2024-06-11', '2024-06-30', 130, 10, 41),
+('CUP042', 'Descuento de 45 MXN en La Huasteca', '2024-06-11', '2024-07-15', 45, 20, 42),
+('CUP043', 'Descuento de 95 MXN en La Mansión', '2024-06-11', '2024-06-30', 95, 30, 43),
+('CUP044', 'Descuento de 40 MXN en El Príncipe', '2024-06-11', '2024-07-01', 40, 40, 44),
+('CUP045', 'Descuento de 60 MXN en La Callejera', '2024-06-11', '2024-07-10', 60, 50, 45),
+('CUP046', 'Descuento de 75 MXN en Moda México', '2024-06-11', '2024-06-20', 75, 10, 46),
+('CUP047', 'Descuento de 100 MXN en Boutique Dulce María', '2024-06-11', '2024-07-01', 100, 20, 47),
+('CUP048', 'Descuento de 50 MXN en Ropa Mi Sueño', '2024-06-11', '2024-06-25', 50, 30, 48),
+('CUP049', 'Descuento de 90 MXN en Recicla Moda', '2024-06-11', '2024-07-05', 90, 40, 49),
+('CUP050', 'Descuento de 60 MXN en Boutique Belinda', '2024-06-11', '2024-07-01', 60, 50, 50),
+('CUP051', 'Descuento de 70 MXN en Diseños Bárbara', '2024-06-11', '2024-06-20', 70, 10, 51),
+('CUP052', 'Descuento de 85 MXN en Indigo Boutique', '2024-06-11', '2024-07-01', 85, 20, 52),
+('CUP053', 'Descuento de 55 MXN en Ocasiones Boutique', '2024-06-11', '2024-06-25', 55, 30, 53),
+('CUP054', 'Descuento de 45 MXN en Elegance Chihuahua', '2024-06-11', '2024-07-10', 45, 40, 54),
+('CUP055', 'Descuento de 95 MXN en Fashion Kiut', '2024-06-11', '2024-06-30', 95, 50, 55),
+('CUP056', 'Descuento de 90 MXN en Moda y Estilo', '2024-06-11', '2024-07-01', 90, 10, 56),
+('CUP057', 'Descuento de 80 MXN en La Gran Ropa', '2024-06-11', '2024-06-20', 80, 20, 57),
+('CUP058', 'Descuento de 30 MXN en Boutique Abril', '2024-06-11', '2024-07-01', 30, 30, 58),
+('CUP059', 'Descuento de 60 MXN en Lady Boutique', '2024-06-11', '2024-06-25', 60, 40, 59),
+('CUP060', 'Descuento de 70 MXN en Casual Store', '2024-06-11', '2024-07-15', 70, 50, 60),
+('CUP076', 'Descuento de 60 MXN en Café Vallejo', '2024-07-01', '2024-07-31', 60, 10, 1),
+('CUP077', 'Descuento de 45 MXN en Café Tin Tan', '2024-07-01', '2024-07-31', 45, 20, 2),
+('CUP078', 'Descuento de 80 MXN en Café Kaldi', '2024-07-01', '2024-07-31', 80, 30, 3),
+('CUP079', 'Descuento de 50 MXN en Café Punta del Cielo', '2024-07-01', '2024-07-31', 50, 40, 4),
+('CUP080', 'Descuento de 100 MXN en Café La Antigua Paz', '2024-07-01', '2024-07-31', 100, 50, 5),
+('CUP081', 'Descuento de 70 MXN en Gloria Jeans Coffee', '2024-07-01', '2024-07-31', 70, 10, 6),
+('CUP082', 'Descuento de 40 MXN en Café Colibrí', '2024-07-01', '2024-07-31', 40, 20, 7),
+('CUP083', 'Descuento de 110 MXN en Café DVolada', '2024-07-01', '2024-07-31', 110, 30, 8),
+('CUP084', 'Descuento de 90 MXN en Café Versalles', '2024-07-01', '2024-07-31', 90, 40, 9),
+('CUP085', 'Descuento de 65 MXN en Café Divine', '2024-07-01', '2024-07-31', 65, 50, 10),
+('CUP086', 'Descuento de 50 MXN en El Rincón del Café', '2024-07-01', '2024-07-31', 50, 10, 11),
+('CUP087', 'Descuento de 120 MXN en Café Imperial', '2024-07-01', '2024-07-31', 120, 20, 12),
+('CUP088', 'Descuento de 55 MXN en La Nonna', '2024-07-01', '2024-07-31', 55, 30, 13),
+('CUP089', 'Descuento de 90 MXN en Café Tía Rosa', '2024-07-01', '2024-07-31', 90, 40, 14),
+('CUP090', 'Descuento de 75 MXN en Colonia Café', '2024-07-01', '2024-07-31', 75, 50, 15),
+('CUP091', 'Descuento de 60 MXN en Bar San Luis', '2024-07-01', '2024-07-31', 60, 10, 16),
+('CUP092', 'Descuento de 45 MXN en La Cervecería', '2024-07-01', '2024-07-31', 45, 20, 17),
+('CUP093', 'Descuento de 80 MXN en Bar el Rincón Feliz', '2024-07-01', '2024-07-31', 80, 30, 18),
+('CUP094', 'Descuento de 50 MXN en Patio Centenario', '2024-07-01', '2024-07-31', 50, 40, 19),
+('CUP095', 'Descuento de 100 MXN en Rocket Bar', '2024-07-01', '2024-07-31', 100, 50, 20),
+('CUP096', 'Descuento de 70 MXN en La Terraza de Urlarte', '2024-07-01', '2024-07-31', 70, 10, 21),
+('CUP097', 'Descuento de 40 MXN en Jarrita Tapatía', '2024-07-01', '2024-07-31', 40, 20, 22),
+('CUP098', 'Descuento de 110 MXN en La Antigua Paz Bar', '2024-07-01', '2024-07-31', 110, 30, 23),
+('CUP099', 'Descuento de 90 MXN en Bar Alaska', '2024-07-01', '2024-07-31', 90, 40, 24),
+('CUP100', 'Descuento de 65 MXN en El Aljibe Bar', '2024-07-01', '2024-07-31', 65, 50, 25),
+('CUP101', 'Descuento de 50 MXN en Esquina del Rock', '2024-07-01', '2024-07-31', 50, 10, 26),
+('CUP102', 'Descuento de 120 MXN en El Desván', '2024-07-01', '2024-07-31', 120, 20, 27),
+('CUP103', 'Descuento de 55 MXN en Bar La Oficina', '2024-07-01', '2024-07-31', 55, 30, 28),
+('CUP104', 'Descuento de 90 MXN en Bar Dublin', '2024-07-01', '2024-07-31', 90, 40, 29),
+('CUP105', 'Descuento de 75 MXN en Bar Hamburgueses', '2024-07-01', '2024-07-31', 75, 50, 30),
+('CUP106', 'Descuento de 60 MXN en La Casona', '2024-07-01', '2024-07-31', 60, 10, 31),
+('CUP107', 'Descuento de 130 MXN en La Casa de los Milagros', '2024-07-01', '2024-07-31', 130, 20, 32),
+('CUP108', 'Descuento de 85 MXN en Il Fornaio', '2024-07-01', '2024-07-31', 85, 30, 33),
+('CUP109', 'Descuento de 55 MXN en Pollo Feliz Centro', '2024-07-01', '2024-07-31', 55, 40, 34),
+('CUP110', 'Descuento de 105 MXN en Mesón de Catedral', '2024-07-01', '2024-07-31', 105, 50, 35),
+('CUP111', 'Descuento de 75 MXN en El Hojaldre', '2024-07-01', '2024-07-31', 75, 10, 36),
+('CUP112', 'Descuento de 50 MXN en El Retablo', '2024-07-01', '2024-07-31', 50, 20, 37),
+('CUP113', 'Descuento de 135 MXN en El Sabor de Oaxaca', '2024-07-01', '2024-07-31', 135, 30, 38),
+('CUP114', 'Descuento de 110 MXN en Comedor Familiar', '2024-07-01', '2024-07-31', 110, 40, 39),
+('CUP115', 'Descuento de 65 MXN en Taquería La Suriana', '2024-07-01', '2024-07-31', 65, 50, 40),
+('CUP116', 'Descuento de 120 MXN en La Sierra', '2024-07-01', '2024-07-31', 120, 10, 41),
+('CUP117', 'Descuento de 60 MXN en La Huasteca', '2024-07-01', '2024-07-31', 60, 20, 42),
+('CUP118', 'Descuento de 95 MXN en La Mansión', '2024-07-01', '2024-07-31', 95, 30, 43),
+('CUP119', 'Descuento de 55 MXN en El Príncipe', '2024-07-01', '2024-07-31', 55, 40, 44),
+('CUP120', 'Descuento de 100 MXN en La Callejera', '2024-07-01', '2024-07-31', 100, 50, 45),
+('CUP121', 'Descuento de 70 MXN en Moda México', '2024-07-01', '2024-07-31', 70, 10, 46),
+('CUP122', 'Descuento de 55 MXN en Boutique Dulce María', '2024-07-01', '2024-07-31', 55, 20, 47),
+('CUP123', 'Descuento de 90 MXN en Ropa Mi Sueño', '2024-07-01', '2024-07-31', 90, 30, 48),
+('CUP124', 'Descuento de 45 MXN en Recicla Moda', '2024-07-01', '2024-07-31', 45, 40, 49),
+('CUP125', 'Descuento de 100 MXN en Boutique Belinda', '2024-07-01', '2024-07-31', 100, 50, 50),
+('CUP126', 'Descuento de 110 MXN en Diseños Bárbara', '2024-07-01', '2024-07-31', 110, 10, 51),
+('CUP127', 'Descuento de 55 MXN en Indigo Boutique', '2024-07-01', '2024-07-31', 55, 20, 52),
+('CUP128', 'Descuento de 70 MXN en Ocasiones Boutique', '2024-07-01', '2024-07-31', 70, 30, 53),
+('CUP129', 'Descuento de 50 MXN en Elegance Chihuahua', '2024-07-01', '2024-07-31', 50, 40, 54),
+('CUP130', 'Descuento de 125 MXN en Fashion Kiut', '2024-07-01', '2024-07-31', 125, 50, 55),
+('CUP131', 'Descuento de 60 MXN en Moda y Estilo', '2024-07-01', '2024-07-31', 60, 10, 56),
+('CUP132', 'Descuento de 95 MXN en La Gran Ropa', '2024-07-01', '2024-07-31', 95, 20, 57),
+('CUP133', 'Descuento de 40 MXN en Boutique Abril', '2024-07-01', '2024-07-31', 40, 30, 58),
+('CUP134', 'Descuento de 75 MXN en Lady Boutique', '2024-07-01', '2024-07-31', 75, 40, 59),
+('CUP135', 'Descuento de 90 MXN en Casual Store', '2024-07-01', '2024-07-31', 90, 50, 60);
+
+INSERT INTO usuarios (username, correo_electronico, contraseña_usuario)
+VALUES
 ('usuario5', 'usuario5@example.com', 'password5'),
 ('usuario6', 'usuario6@example.com', 'password6'),
 ('usuario7', 'usuario7@example.com', 'password7'),
@@ -191,378 +508,26 @@ VALUES
 ('usuario27', 'usuario27@example.com', 'password27'),
 ('usuario28', 'usuario28@example.com', 'password28'),
 ('usuario29', 'usuario29@example.com', 'password29'),
-('usuario30', 'usuario30@example.com', 'password30');
+('usuario30', 'usuario30@example.com', 'password30'); 
 
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP001', 'Descuento de 50 MXN en Café Vallejo', '2024-06-11', '2024-06-21', 50, 1),
-('CUP002', 'Descuento de 70 MXN en Café Tin Tan', '2024-06-11', '2024-07-01', 70, 2),
-('CUP003', 'Descuento de 100 MXN en Café Kaldi', '2024-06-11', '2024-06-15', 100, 3),
-('CUP004', 'Descuento de 40 MXN en Café Punta del Cielo', '2024-06-11', '2024-07-11', 40, 4),
-('CUP005', 'Descuento de 60 MXN en Café La Antigua Paz', '2024-06-11', '2024-06-13', 60, 5),
-('CUP006', 'Descuento de 80 MXN en Gloria Jeans Coffee', '2024-05-11', '2024-06-04', 80, 6),
-('CUP007', 'Descuento de 90 MXN en Café Colibrí', '2024-04-11', '2024-06-21', 90, 7),
-('CUP008', 'Descuento de 35 MXN en Café DVolada', '2024-06-11', '2024-07-13', 35, 8),
-('CUP009', 'Descuento de 50 MXN en Café Versalles', '2024-06-20', '2024-07-11', 50, 9),
-('CUP010', 'Descuento de 100 MXN en Café Divine', '2024-06-01', '2024-08-12', 100,10),
-('CUP011', 'Descuento de 60 MXN en El Rincón del Café', '2024-06-11', '2024-06-21', 60, 11),
-('CUP012', 'Descuento de 30 MXN en Café Imperial', '2024-06-11', '2024-07-11', 30, 12),
-('CUP013', 'Descuento de 90 MXN en La Nonna', '2024-06-11', '2024-07-11', 90, 13);
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP014', 'Descuento de 120 MXN en Café Tía Rosa', '2024-06-11', '2024-07-11', 120, 14),
-('CUP015', 'Descuento de 150 MXN en Colonia Café', '2024-06-11', '2024-07-11', 150, 15),
-('CUP016', 'Descuento de 30 MXN en Bar San Luis', '2024-06-11', '2024-06-21', 30, 16),
-('CUP017', 'Descuento de 70 MXN en La Cervecería', '2024-06-11', '2024-07-01', 70, 17),
-('CUP018', 'Descuento de 100 MXN en Bar el Rincón Feliz', '2024-06-11', '2024-06-15', 100, 18),
-('CUP019', 'Descuento de 40 MXN en Patio Centenario', '2024-06-11', '2024-07-11', 40, 19),
-('CUP020', 'Descuento de 60 MXN en Rocket Bar', '2024-06-11', '2024-06-13', 60, 20),
-('CUP021', 'Descuento de 80 MXN en La Terraza de Urlarte', '2024-05-11', '2024-06-04', 80, 21),
-('CUP022', 'Descuento de 90 MXN en Jarrita Tapatía', '2024-04-11', '2024-06-21', 90, 22),
-('CUP023', 'Descuento de 35 MXN en La Antigua Paz Bar', '2024-06-11', '2024-07-13', 35, 23),
-('CUP024', 'Descuento de 50 MXN en Bar Alaska', '2024-06-20', '2024-07-11', 50, 24);
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP025', 'Descuento de 100 MXN en El Aljibe Bar', '2024-06-01', '2024-08-12', 100, 25);
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP026', 'Descuento de 135 MXN en Esquina del Rock', '2024-06-11', '2024-06-25', 135, 26);
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP027', 'Descuento de 40 MXN en El Desván', '2024-06-11', '2024-07-05', 40, 27);
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP028', 'Descuento de 90 MXN en Bar La Oficina', '2024-06-11', '2024-06-20', 90, 28);
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP029', 'Descuento de 75 MXN en Bar Dublin', '2024-06-11', '2024-07-01', 75, 29),
-('CUP030', 'Descuento de 50 MXN en Bar Hamburgueses', '2024-06-11', '2024-06-30', 50, 30);
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP031', 'Descuento de 60 MXN en La Casona', '2024-06-11', '2024-06-20', 60, 31),
-('CUP032', 'Descuento de 120 MXN en La Casa de los Milagros', '2024-06-11', '2024-07-01', 120, 32),
-('CUP033', 'Descuento de 50 MXN en Il Fornaio', '2024-06-11', '2024-06-25', 50, 33),
-('CUP034', 'Descuento de 90 MXN en Pollo Feliz Centro', '2024-06-11', '2024-07-05', 90, 34),
-('CUP035', 'Descuento de 70 MXN en Mesón de Catedral', '2024-06-11', '2024-06-20', 70, 35),
-('CUP036', 'Descuento de 75 MXN en El Hojaldre', '2024-06-11', '2024-07-01', 75, 36),
-('CUP037', 'Descuento de 40 MXN en El Retablo', '2024-06-11', '2024-06-30', 40, 37),
-('CUP038', 'Descuento de 85 MXN en El Sabor de Oaxaca', '2024-06-11', '2024-07-20', 85, 38),
-('CUP039', 'Descuento de 55 MXN en Comedor Familiar', '2024-06-11', '2024-06-25', 55, 39);
-INSERT INTO cupones (codigo, descripcion_cupon, fecha_inicio, fecha_vencimiento, descuento_mxn, fk_establecimiento)
-VALUES
-('CUP040', 'Descuento de 60 MXN en Taquería La Suriana', '2024-06-11', '2024-07-01', 60, 40),
-('CUP041', 'Descuento de 130 MXN en La Sierra', '2024-06-11', '2024-06-30', 130, 41),
-('CUP042', 'Descuento de 45 MXN en La Huasteca', '2024-06-11', '2024-07-15', 45, 42),
-('CUP043', 'Descuento de 95 MXN en La Mansión', '2024-06-11', '2024-06-30', 95, 43),
-('CUP044', 'Descuento de 40 MXN en El Príncipe', '2024-06-11', '2024-07-01', 40, 44),
-('CUP045', 'Descuento de 60 MXN en La Callejera', '2024-06-11', '2024-07-10', 60, 45),
-('CUP046', 'Descuento de 75 MXN en Moda México', '2024-06-11', '2024-06-20', 75, 46),
-('CUP047', 'Descuento de 100 MXN en Boutique Dulce María', '2024-06-11', '2024-07-01', 100, 47),
-('CUP048', 'Descuento de 50 MXN en Ropa Mi Sueño', '2024-06-11', '2024-06-25', 50, 48),
-('CUP049', 'Descuento de 90 MXN en Recicla Moda', '2024-06-11', '2024-07-05', 90, 49),
-('CUP050', 'Descuento de 60 MXN en Boutique Belinda', '2024-06-11', '2024-07-01', 60, 50),
-('CUP051', 'Descuento de 70 MXN en Diseños Bárbara', '2024-06-11', '2024-06-20', 70, 51),
-('CUP052', 'Descuento de 85 MXN en Indigo Boutique', '2024-06-11', '2024-07-01', 85, 52),
-('CUP053', 'Descuento de 55 MXN en Ocasiones Boutique', '2024-06-11', '2024-06-25', 55, 53),
-('CUP054', 'Descuento de 45 MXN en Elegance Chihuahua', '2024-06-11', '2024-07-10', 45, 54),
-('CUP055', 'Descuento de 95 MXN en Fashion Kiut', '2024-06-11', '2024-06-30', 95, 55),
-('CUP056', 'Descuento de 90 MXN en Moda y Estilo', '2024-06-11', '2024-07-01', 90, 56),
-('CUP057', 'Descuento de 80 MXN en La Gran Ropa', '2024-06-11', '2024-06-20', 80, 57),
-('CUP058', 'Descuento de 30 MXN en Boutique Abril', '2024-06-11', '2024-07-01', 30, 58),
-('CUP059', 'Descuento de 60 MXN en Lady Boutique', '2024-06-11', '2024-06-25', 60, 59),
-('CUP060', 'Descuento de 70 MXN en Casual Store', '2024-06-11', '2024-07-15', 70, 60),
-('CUP076', 'Descuento de 60 MXN en Café Vallejo', '2024-07-01', '2024-07-31', 60, 1),
-('CUP077', 'Descuento de 45 MXN en Café Tin Tan', '2024-07-01', '2024-07-31', 45, 2),
-('CUP078', 'Descuento de 80 MXN en Café Kaldi', '2024-07-01', '2024-07-31', 80, 3),
-('CUP079', 'Descuento de 50 MXN en Café Punta del Cielo', '2024-07-01', '2024-07-31', 50, 4),
-('CUP080', 'Descuento de 100 MXN en Café La Antigua Paz', '2024-07-01', '2024-07-31', 100, 5),
-('CUP081', 'Descuento de 70 MXN en Gloria Jeans Coffee', '2024-07-01', '2024-07-31', 70, 6),
-('CUP082', 'Descuento de 40 MXN en Café Colibrí', '2024-07-01', '2024-07-31', 40, 7),
-('CUP083', 'Descuento de 110 MXN en Café DVolada', '2024-07-01', '2024-07-31', 110, 8),
-('CUP084', 'Descuento de 90 MXN en Café Versalles', '2024-07-01', '2024-07-31', 90, 9),
-('CUP085', 'Descuento de 65 MXN en Café Divine', '2024-07-01', '2024-07-31', 65, 10),
-('CUP086', 'Descuento de 50 MXN en El Rincón del Café', '2024-07-01', '2024-07-31', 50, 11),
-('CUP087', 'Descuento de 120 MXN en Café Imperial', '2024-07-01', '2024-07-31', 120, 12),
-('CUP088', 'Descuento de 55 MXN en La Nonna', '2024-07-01', '2024-07-31', 55, 13),
-('CUP089', 'Descuento de 90 MXN en Café Tía Rosa', '2024-07-01', '2024-07-31', 90, 14),
-('CUP090', 'Descuento de 75 MXN en Colonia Café', '2024-07-01', '2024-07-31', 75, 15),
-('CUP091', 'Descuento de 60 MXN en Bar San Luis', '2024-07-01', '2024-07-31', 60, 16),
-('CUP092', 'Descuento de 45 MXN en La Cervecería', '2024-07-01', '2024-07-31', 45, 17),
-('CUP093', 'Descuento de 80 MXN en Bar el Rincón Feliz', '2024-07-01', '2024-07-31', 80, 18),
-('CUP094', 'Descuento de 50 MXN en Patio Centenario', '2024-07-01', '2024-07-31', 50, 19),
-('CUP095', 'Descuento de 100 MXN en Rocket Bar', '2024-07-01', '2024-07-31', 100, 20),
-('CUP096', 'Descuento de 70 MXN en La Terraza de Urlarte', '2024-07-01', '2024-07-31', 70, 21),
-('CUP097', 'Descuento de 40 MXN en Jarrita Tapatía', '2024-07-01', '2024-07-31', 40, 22),
-('CUP098', 'Descuento de 110 MXN en La Antigua Paz Bar', '2024-07-01', '2024-07-31', 110, 23),
-('CUP099', 'Descuento de 90 MXN en Bar Alaska', '2024-07-01', '2024-07-31', 90, 24),
-('CUP100', 'Descuento de 65 MXN en El Aljibe Bar', '2024-07-01', '2024-07-31', 65, 25),
-('CUP101', 'Descuento de 50 MXN en Esquina del Rock', '2024-07-01', '2024-07-31', 50, 26),
-('CUP102', 'Descuento de 120 MXN en El Desván', '2024-07-01', '2024-07-31', 120, 27),
-('CUP103', 'Descuento de 55 MXN en Bar La Oficina', '2024-07-01', '2024-07-31', 55, 28),
-('CUP104', 'Descuento de 90 MXN en Bar Dublin', '2024-07-01', '2024-07-31', 90, 29),
-('CUP105', 'Descuento de 75 MXN en Bar Hamburgueses', '2024-07-01', '2024-07-31', 75, 30),
-('CUP106', 'Descuento de 60 MXN en La Casona', '2024-07-01', '2024-07-31', 60, 31),
-('CUP107', 'Descuento de 130 MXN en La Casa de los Milagros', '2024-07-01', '2024-07-31', 130, 32),
-('CUP108', 'Descuento de 85 MXN en Il Fornaio', '2024-07-01', '2024-07-31', 85, 33),
-('CUP109', 'Descuento de 55 MXN en Pollo Feliz Centro', '2024-07-01', '2024-07-31', 55, 34),
-('CUP110', 'Descuento de 105 MXN en Mesón de Catedral', '2024-07-01', '2024-07-31', 105, 35),
-('CUP111', 'Descuento de 75 MXN en El Hojaldre', '2024-07-01', '2024-07-31', 75, 36),
-('CUP112', 'Descuento de 50 MXN en El Retablo', '2024-07-01', '2024-07-31', 50, 37),
-('CUP113', 'Descuento de 135 MXN en El Sabor de Oaxaca', '2024-07-01', '2024-07-31', 135, 38),
-('CUP114', 'Descuento de 110 MXN en Comedor Familiar', '2024-07-01', '2024-07-31', 110, 39),
-('CUP115', 'Descuento de 65 MXN en Taquería La Suriana', '2024-07-01', '2024-07-31', 65, 40),
-('CUP116', 'Descuento de 120 MXN en La Sierra', '2024-07-01', '2024-07-31', 120, 41),
-('CUP117', 'Descuento de 60 MXN en La Huasteca', '2024-07-01', '2024-07-31', 60, 42),
-('CUP118', 'Descuento de 95 MXN en La Mansión', '2024-07-01', '2024-07-31', 95, 43),
-('CUP119', 'Descuento de 55 MXN en El Príncipe', '2024-07-01', '2024-07-31', 55, 44),
-('CUP120', 'Descuento de 100 MXN en La Callejera', '2024-07-01', '2024-07-31', 100, 45),
-('CUP121', 'Descuento de 70 MXN en Moda México', '2024-07-01', '2024-07-31', 70, 46),
-('CUP122', 'Descuento de 55 MXN en Boutique Dulce María', '2024-07-01', '2024-07-31', 55, 47),
-('CUP123', 'Descuento de 90 MXN en Ropa Mi Sueño', '2024-07-01', '2024-07-31', 90, 48),
-('CUP124', 'Descuento de 45 MXN en Recicla Moda', '2024-07-01', '2024-07-31', 45, 49),
-('CUP125', 'Descuento de 100 MXN en Boutique Belinda', '2024-07-01', '2024-07-31', 100, 50),
-('CUP126', 'Descuento de 110 MXN en Diseños Bárbara', '2024-07-01', '2024-07-31', 110, 51),
-('CUP127', 'Descuento de 55 MXN en Indigo Boutique', '2024-07-01', '2024-07-31', 55, 52),
-('CUP128', 'Descuento de 70 MXN en Ocasiones Boutique', '2024-07-01', '2024-07-31', 70, 53),
-('CUP129', 'Descuento de 50 MXN en Elegance Chihuahua', '2024-07-01', '2024-07-31', 50, 54),
-('CUP130', 'Descuento de 125 MXN en Fashion Kiut', '2024-07-01', '2024-07-31', 125, 55),
-('CUP131', 'Descuento de 60 MXN en Moda y Estilo', '2024-07-01', '2024-07-31', 60, 56),
-('CUP132', 'Descuento de 95 MXN en La Gran Ropa', '2024-07-01', '2024-07-31', 95, 57),
-('CUP133', 'Descuento de 40 MXN en Boutique Abril', '2024-07-01', '2024-07-31', 40, 58),
-('CUP134', 'Descuento de 75 MXN en Lady Boutique', '2024-07-01', '2024-07-31', 75, 59),
-('CUP135', 'Descuento de 90 MXN en Casual Store', '2024-07-01', '2024-07-31', 90, 60);
+/* -------------------------------------------------------------------------------------------------------------------------------------  
+												Pruebas
+ -------------------------------------------------------------------------------------------------------------------------------------  */
 
+select count(*) from usuario_cupon;
 
-INSERT INTO usuario_cupon (fk_usuario, fk_cupon, fecha_uso)
-VALUES
-(1, 1, '2024-06-12'),
-(2, 2, '2024-06-13'),
-(3, 3, '2024-06-14'),
-(4, 4, '2024-06-15'),
-(5, 5, '2024-06-16'),
-(6, 6, '2024-06-17'),
-(7, 7, '2024-06-18'),
-(8, 8, '2024-06-19'),
-(9, 9, '2024-06-20'),
-(10, 10, '2024-06-21'),
-(11, 11, '2024-06-22'),
-(12, 12, '2024-06-23'),
-(13, 13, '2024-06-24'),
-(14, 14, '2024-06-25'),
-(15, 15, '2024-06-26'),
-(1, 16, '2024-06-27'),
-(2, 17, '2024-06-28'),
-(3, 18, '2024-06-29'),
-(4, 19, '2024-06-30'),
-(5, 20, '2024-07-01'),
-(6, 21, '2024-07-02'),
-(7, 22, '2024-07-03'),
-(8, 23, '2024-07-04'),
-(9, 24, '2024-07-05'),
-(10, 25, '2024-07-06'),
-(11, 26, '2024-07-07'),
-(12, 27, '2024-07-08'),
-(13, 28, '2024-07-09'),
-(14, 29, '2024-07-10'),
-(15, 30, '2024-07-11'),
-(1, 31, '2024-07-12'),
-(2, 32, '2024-07-13'),
-(3, 33, '2024-07-14'),
-(4, 34, '2024-07-15'),
-(5, 35, '2024-07-16'),
-(6, 36, '2024-07-17'),
-(7, 37, '2024-07-18'),
-(8, 38, '2024-07-19'),
-(9, 39, '2024-07-20'),
-(10, 40, '2024-07-21'),
-(11, 41, '2024-07-22'),
-(12, 42, '2024-07-23'),
-(13, 43, '2024-07-24'),
-(14, 44, '2024-07-25'),
-(15, 45, '2024-07-26'),
-(1, 46, '2024-07-27'),
-(2, 47, '2024-07-28'),
-(3, 48, '2024-07-29'),
-(4, 49, '2024-07-30'),
-(5, 50, '2024-07-31'),
-(6, 51, '2024-08-01'),
-(7, 52, '2024-08-02'),
-(8, 53, '2024-08-03'),
-(9, 54, '2024-08-04'),
-(10, 55, '2024-08-05'),
-(11, 56, '2024-08-06'),
-(12, 57, '2024-08-07'),
-(13, 58, '2024-08-08'),
-(14, 59, '2024-08-09'),
-(15, 60, '2024-08-10'),
-(1, 76, '2024-08-11'),
-(2, 77, '2024-08-12'),
-(3, 78, '2024-08-13'),
-(4, 79, '2024-08-14'),
-(5, 80, '2024-08-15'),
-(6, 81, '2024-08-16'),
-(7, 82, '2024-08-17'),
-(8, 83, '2024-08-18'),
-(9, 84, '2024-08-19'),
-(10, 85, '2024-08-20'),
-(11, 86, '2024-08-21'),
-(12, 87, '2024-08-22'),
-(13, 88, '2024-08-23'),
-(14, 89, '2024-08-24'),
-(15, 90, '2024-08-25');
+UPDATE cupones
+SET descuento_mxn = CASE
+    WHEN id_cupon = 23 THEN 50
+    WHEN id_cupon = 45 THEN 120
+    WHEN id_cupon = 12 THEN 40
+    WHEN id_cupon = 8 THEN 45
+    WHEN id_cupon = 37 THEN 60
+    ELSE descuento_mxn
+END,
+descuento_anterior = descuento_mxn
+WHERE id_cupon IN (23, 45, 12, 8, 37);
 
+select * from registro_cambios_descuento;
 
--- Indices
-/*
--- Se crea un indice para el nombre de usuarios, para así, poder encontrar más rapido buscando usuarios unicos,
-tambien se creará una similar para establecimientos.
-
-*/
-create index usr_idx on usuarios (username);
-create index correo_idx on usuarios (correo_electronico);
-
-create index empr_idx on empresarios (user_name);
-create index emprCorreo_idx on empresarios (correo);
-
-create index establecimiento_idx on establecimientos (nombre_local);
-
-create index cupones_idx on cupones (codigo);
-
-/*
-Funciones de agregado
-*/
-
-/*
-1.- Cupones activos
-*/
-select codigo, (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as establecimiento, fecha_vencimiento
-from cupones where fecha_vencimiento > '2024-06-10';
-
-/*
-2.- Cupones usados
-En este consulta puede parecer un simple 'select * from usuario_cupon', pero se está haciendo uso de una subquery para enlazar directamente un cupon usado con un username
-*/
-select (select codigo from cupones where id_cupon = fk_cupon) as codigo_cupon, (select username from usuarios where id_usuario = fk_usuario) as User, fecha_uso
-from usuario_cupon;
-
-/*
-1.- ¿Cuantos establecimientos tenemos?
-*/
-select count(id_establecimiento)as Cant_establecimientos from establecimientos;
-
-/*
-2.- ¿Cuantos establecimientos de cada categoria tenemos?
-*/
-select (select nombre_categoria from categorias where id_categoria = fk_categoria) as categoria, count(id_establecimiento)as Cant_establecimientos 
-from establecimientos
-group by fk_categoria;
-
-/*
-3.- ¿Cuantos establecimientos tiene cada empresario?
-*/
-select (select nombre_empresario from empresarios where id_empresario = fk_empresario) as Empresario, count(id_establecimiento) as Cant_establecimientos
-from establecimientos
-group by fk_empresario;
-
-/*
-4.- ¿Cuantos usuarios hay registrados?
-*/
-select count(id_usuario) Cant_users from usuarios;
-
-/*
-5.- ¿Cuantos cupones han usado cada usuario?
-*/
-select (select username from usuarios where id_usuario = fk_usuario) as User, count(fk_usuario) as Cupones_usados
-from usuario_cupon
-group by fk_usuario;
-
-/*
-5.- ¿Cuantos cupones no han sido usados?
-*/
-select count(id_cupon) as cuponesNoUsados
-from cupones
-where id_cupon not in (select fk_cupon from usuario_cupon);
-
-/*
-6.- ¿Cupon con mas tiempo de vigencia en el futuro?
-falta refinar
-*/
-
-select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Establecimiento, descripcion_cupon, max(fecha_vencimiento) as fechamayor
-from cupones 
-group by id_cupon order by fecha_vencimiento desc limit 1;
-
-/*
-7.- ¿Cupon con mas proximo a vencer en el futuro?
-*/
-
-select (select nombre_local from establecimientos where id_establecimiento = fk_establecimiento) as Establecimiento, descripcion_cupon, min(fecha_vencimiento) as fechamayor
-from cupones where fecha_vencimiento > CURDATE()
-group by id_cupon order by fecha_vencimiento asc limit 1;
-
-/*
-ORDENAMIENTO
-*/
-
-/*
-Cupones ordenados por su fecha de inicio
-*/
-select id_cupon, fecha_inicio
-from cupones
-order by fecha_inicio asc;
-
-/*
-Establecimientos ordenados por categoria y orden alfabetico
-*/
-select nombre_local, (select nombre_categoria from categorias where id_categoria = fk_categoria) as categoria
-from establecimientos
-order by categoria, nombre_local;
-
-/*
-Establecimientos ordenados por dueño y orden alfabetico
-*/
-select  nombre_local, (select nombre_empresario from empresarios where id_empresario = fk_empresario) as empresario
-from establecimientos
-order by empresario, nombre_local;
-
-/*  VISTAS   */  
-
--- Vista para cafeterias
-create view lugares_cafeterias as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 1;
-select * from lugares_cafeterias;
-
--- Vista para bares
-create view lugares_bares as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 2;
-select * from lugares_bares;
-
-
--- Vista para restaurantes
-create view lugares_restaurantes as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 3;
-select * from lugares_restaurantes;
-
--- vista para tiendas de ropa
-create view lugares_tiendas_ropa as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 4;
-select * from lugares_tiendas_ropa;
-
--- vista para joyerias
-create view lugares_joyerias as select id_establecimiento, nombre_local, telefono_local from establecimientos where fk_categoria = 5;
-select * from lugares_joyerias;
-
-
-/* SUBCONSULTAS  */
-
--- cupones por dia de la semana, por local, dia de la semana, cupones por empresario, 
--- Usuarios po lugares a los que fueron utilizando los cupones que canjearon
-
-
--- cupones por dia de la semana, con su local
-select c.id_cupon, e.id_establecimiento, e.nombre_local, c.fecha_inicio, c.fecha_vencimiento from cupones c, establecimientos e where c.fk_establecimiento = e.id_establecimiento;
-
-
--- cupones por dia de uso
-select dayname(fecha_uso)as dia_semana, count(id_usuario_cupon)as cantidad_cupones from usuario_cupon group by dia_semana;
-
--- cupones por mes de inicio
-select monthname(fecha_inicio) as mes_inicio, count(id_cupon) as cantidad_cupones from cupones group by mes_inicio;
-
-select * from cupones;
+-- drop database VACUU_Triggers;
