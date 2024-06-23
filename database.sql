@@ -570,3 +570,45 @@ insert into empresarios(nombre_empresario, correo, user_name, contraseña_empres
 values 	('Gerardo Perez', 'dbsdkbe@gmail.com', 'gerardito','bvfjebdjk','6145329859');
 
 delete from empresarios where id_empresario = 16;
+
+
+
+
+
+/*---------------------------------------------------------------------------------------------------------------------- 
+                                            Disparador de bloqueo de cuenta. 
+-----------------------------------------------------------------------------------------------------------------------*/
+describe usuarios;
+
+-- Creacion de la tabla intentos_sesion
+create table intentos_sesion (
+id_sesion int primary key auto_increment not null,
+id_usuario int,
+username varchar(40),
+correo_electronico varchar(40)
+);
+
+-- Actualizar tabla usuarios
+alter table usuarios add column estado varchar(20) default 'Activo';
+
+-- Disparador
+DELIMITER //
+create trigger bloqueo_usuarios
+after insert on intentos_sesion
+for each row
+begin
+	declare num_intentos int;
+    set num_intentos = (select count(*) from intentos_sesion where id_usuario = new.id_usuario);
+		if num_intentos >= 3 then
+			update usuarios set estado = 'Bloqueado' where id_usuario = new.id_usuario;
+        end if;
+end //
+DELIMITER ;
+
+-- Verificacion del disparador
+insert into intentos_sesion (id_usuario) values 
+(1); -- X3
+
+select* from intentos_sesion;
+
+select * from usuarios;
