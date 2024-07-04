@@ -582,7 +582,7 @@ group by fk_categoria;
 
 -- ¿Cuántos cupones se utilizan por día de la semana?
 select 
-  dayname(fecha_uso) as dia_semana,
+  dayname(fecha_registro) as dia_semana,
   count(id_usuario_cupon) as cantidad_cupones 
 from usuario_cupon 
 group by dia_semana;
@@ -803,3 +803,205 @@ where id_establecimiento = 1;
 
 select * from establecimientos;
 
+
+
+
+/*-----------------------------------------------------------------------------------------
+								PROCEDIMIENTOS ALMACENADOS
+-----------------------------------------------------------------------------------------*/
+
+/* ------------------------------------------------------------------------------
+1.- Procedimiento Almacenado para calcular el total de cupones por usuario:
+--------------------------------------------------------------------------------*/
+DELIMITER //
+create procedure total_cupones_usuario(cliente_id int)
+begin
+	select count(*) as cantidad_cupones from cupones c
+    left join usuario_cupon uc on c.id_cupon = uc.fk_cupon
+    where uc.fk_usuario in (select id_usuario from usuarios where id_usuario = cliente_id);
+end //
+DELIMITER ;
+
+call total_cupones_usuario(5);
+
+
+/* -----------------------------------------------------------------------------------
+2.- Procedimiento Almacenado para obtener el nombre de la categoria de un lugar 
+------------------------------------------------------------------------------------*/
+
+SELECT * FROM establecimientos;
+DELIMITER //
+create procedure Nombre_categoria_establecimiento(
+establecimiento_id int)
+begin
+	select e.id_establecimiento, e.nombre_local, c.nombre_categoria from establecimientos e, categorias c where e.id_establecimiento = establecimiento_id 
+    and e.fk_categoria = c.id_categoria;
+    
+    end //
+    DELIMITER ;
+
+call Nombre_categoria_establecimiento(3);
+
+
+
+/* ------------------------------------------------------------------------------------------------------------
+3.- Procedimiento Almacenado para generar un informe de inventario de cupones especificos por establecimiento
+------------------------------------------------------------------------------------------------------------- */ 
+DELIMITER //
+
+create procedure informe_inventario_cupones()
+begin
+    select 
+        uc.id_usuario_cupon as codigo_cupon,
+        c.descripcion_cupon as descripcion,
+        c.descuento_mxn as valor_descuento,
+        c.fecha_vencimiento as fecha_vencimiento,
+        e.nombre_local as establecimiento
+    from 
+        usuario_cupon uc
+    join
+        cupones c on uc.fk_cupon = c.id_cupon
+    join
+        establecimientos e on c.fk_establecimiento = e.id_establecimiento
+    where
+        uc.fk_usuario is null
+        and c.fecha_vencimiento >= CURDATE()
+    order by 
+        e.nombre_local, c.fecha_vencimiento;
+end //
+
+DELIMITER ;
+
+call informe_inventario_cupones();
+
+
+/*------------------------------------------------------------------------------------------------
+	4. Procedimiento Almacenado para calcular la cantidad promedio de descuento en cupones
+--------------------------------------------------------------------------------------------------*/
+
+DELIMITER //
+
+create procedure Calcular_promedio_descuento_cupones()
+begin
+	select avg(descuento_mxn) as Promedio_de_descuento from cupones;
+    
+    end //
+DELIMITER ;
+
+call Calcular_promedio_descuento_cupones();
+
+
+/*---------------------------------------------------------------------------------------------------------------------- 
+						5.- Procedimiento almacenado para obtener la lista de pedidos pendientes. 
+-----------------------------------------------------------------------------------------------------------------------*/
+delimiter $$
+create procedure promocionesVigentes()
+begin 
+	select * from cupones where fecha_vencimiento > now();
+    end $$
+
+delimiter ;
+
+
+
+delimiter $$
+CREATE PROCEDURE randomUser(OUT randomUser INT)
+BEGIN
+    DECLARE randID INT;
+
+    SELECT id_usuario INTO randID FROM usuarios ORDER BY RAND() LIMIT 1;
+    SET randomUser = randID;
+END$$
+
+DELIMITER ;
+
+call promocionesVigentes();
+
+/* ---------------------------------------------------------------------------------------------
+			6.- Procedimiento Almacenado para validar la vigencia de cupones:
+-----------------------------------------------------------------------------------------------*/
+delimiter $$
+create procedure validarDisponibilidadStock(in IDCupon int)
+begin 
+	if (select fecha_vencimiento from cupones where id_cupon = IDCupon) > now() then 
+    select * from cupones where id_cupon = IDCupon;
+    else
+    select 'El cupon ya no es valido';
+    end if;
+END $$
+
+delimiter ;
+call validarDisponibilidadStock(9);
+
+
+
+/*-------------------------------------------------------------------------------------------------
+									PORTAFOLIO: TRANSACCIONES
+--------------------------------------------------------------------------------------------------*/
+/*-------------------------------------------------------------------------------------------------*/
+#1.- Actualización de inventario(cantidad de cupones) y registro de transacción
+
+-- Creacion de la tabla registro_transaccion
+create table registro_transaccion (
+id_registro int primary key auto_increment not null,
+cupon_id int,
+tipo_registro varchar(200),
+foreign key(cupon_id) references cupones(id_cupon)
+);
+
+-- Transaccion
+DELIMITER //
+start transaction;
+select id_cupon into @id_cupon from cupones where id_cupon = 2;
+
+select id_cupon into @cupon_id from cupones where id_cupon = @id_cupon;
+
+SELECT cantidad INTO @cantidad_anterior FROM cupones WHERE id_cupon = @id_cupon;
+
+update cupones set cantidad = 5
+where id_cupon = @id_cupon;
+
+SELECT cantidad INTO @cantidad_actual FROM cupones WHERE id_cupon = @id_cupon;
+
+INSERT INTO registro_transaccion (cupon_id, tipo_registro)
+VALUES (@cupon_id, CONCAT('Actualización de inventario. Cantidad anterior: ', @cantidad_anterior, ' Cantidad actual: ', @cantidad_actual));  
+
+commit; //
+DELIMITER ;
+
+-- drop table registro_transaccion;
+
+
+-- select * from cupones;
+-- select * from registro_transaccion; 
+
+
+
+/*-------------------------------------------------------------------------------------------------*/
+#3.- Cambio de estado de un cupon y actualización de registros 
+
+-- Actualizar tabla cupones
+alter table cupones add column estado varchar(20) default 'Activo';
+
+
+-- Transaccion
+DELIMITER //
+start transaction;
+select id_cupon into @id_cupon from cupones where id_cupon = 6;
+select id_cupon into @cupon_id from cupones where id_cupon = @id_cupon;
+
+update cupones set estado = 'Inactivo'
+where id_cupon = @id_cupon;
+
+select estado into @estado from cupones where id_cupon = @id_cupon;
+
+INSERT INTO registro_transaccion (cupon_id, tipo_registro)
+VALUES (@cupon_id, CONCAT('Cambio de Estado. Estado actual: ', @estado));  
+
+commit; //
+
+DELIMITER ;
+
+-- update cupones set estado = 'Activo';
+select * from cupones;
+select * from registro_transaccion; 
