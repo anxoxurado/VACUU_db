@@ -983,24 +983,21 @@ DELIMITER ;
 -- Actualizar tabla cupones
 alter table cupones add column estado varchar(20) default 'Activo';
 
-
 -- Transaccion
 DELIMITER //
 start transaction;
-select id_cupon into @id_cupon from cupones where id_cupon = 6;
-select id_cupon into @cupon_id from cupones where id_cupon = @id_cupon;
+-- Actualizar el estado de los cupones vencidos a 'Inactivo'
+update cupones set estado = 'Inactivo' where fecha_vencimiento <= NOW();
 
-update cupones set estado = 'Inactivo'
-where id_cupon = @id_cupon;
-
-select estado into @estado from cupones where id_cupon = @id_cupon;
-
-INSERT INTO registro_transaccion (cupon_id, tipo_registro)
-VALUES (@cupon_id, CONCAT('Cambio de Estado. Estado actual: ', @estado));  
+-- Registrar los cambios en la tabla registro_transaccion para cada cupón actualizado
+insert into registro_transaccion (cupon_id, tipo_registro)
+select id_cupon, CONCAT('Cambio de Estado. Estado actual: ', estado)
+from cupones
+where estado = 'Inactivo';
 
 commit; //
-
 DELIMITER ;
+
 
 -- update cupones set estado = 'Activo';
 select * from cupones;
