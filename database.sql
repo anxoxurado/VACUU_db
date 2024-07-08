@@ -976,6 +976,53 @@ DELIMITER ;
 -- select * from registro_transaccion; 
 
 
+/*------------------------------------------------------------------------------------------------
+					2.- TRANSFERENCIAS DE FONDOS Y ACTUALIZACION 
+--------------------------------------------------------------------------------------------------*/
+
+-- Vemos los usuarios que tengan cupones
+select u.id_usuario, u.username, c.id_cupon, c.codigo, uc.fk_usuario, uc.fk_cupon from usuario_cupon uc 
+join usuarios u on uc.fk_usuario = u.id_usuario
+join cupones c on uc.fk_cupon = c.id_cupon;
+
+-- Creamos tabla para registros de transaccion de cupones
+create table registro_de_transaccion_de_cupones(
+id_transaccion int auto_increment primary key,
+id_usuario_cupon varchar(10) not null,
+id_usuario_nuevo int not null,
+id_usuario_anterior int not null,
+id_cupon int not null,
+fecha_de_transaccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+
+-- Procedimiento para transferir todos los cupones de un usuario a otro
+DELIMITER //
+create procedure transferir_cupones_a_usuarios(
+usuario_anterior_id int,
+usuario_nuevo_id int)
+begin 
+
+	insert into registro_de_transaccion_de_cupones (id_usuario_cupon, id_usuario_nuevo, id_usuario_anterior, id_cupon)
+    select uc.id_usuario_cupon, usuario_nuevo_id, usuario_anterior_id, uc.fk_cupon from usuario_cupon uc
+    where uc.fk_usuario = usuario_anterior_id;
+
+	update usuario_cupon set fk_usuario = usuario_nuevo_id where fk_usuario = usuario_anterior_id;
+    
+end //
+DELIMITER ;
+
+-- Transaccion para transferir los cupones de forma segura
+DELIMITER //
+start transaction;
+call transferir_cupones_a_usuarios(1,10);
+
+commit; 
+// 
+DELIMITER ;
+
+-- Verificar el registro de la transaccion anterior (Si no aparece el registro quiere decir que no se pudo hacer
+-- la transaccion por que el usuario anterior no tenia cupones)
+select * from registro_de_transaccion_de_cupones;
+
 
 /*-------------------------------------------------------------------------------------------------*/
 #3.- Cambio de estado de un cupon y actualización de registros 
