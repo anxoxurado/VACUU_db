@@ -1002,3 +1002,66 @@ DELIMITER ;
 -- update cupones set estado = 'Activo';
 select * from cupones;
 select * from registro_transaccion; 
+
+
+/*------------------------------------------------------------------------------------------------*/
+#4.- Actualizacion de informacion del cliente y registro de auditoria
+-- Creamos la tabla de auditoria.
+
+create table auditoria_usuarios (
+    id_auditoria int auto_increment primary key,
+    id_usuario int,
+    campo_modificado varchar(50),
+    valor_anterior varchar(100),
+    valor_nuevo varchar(100),
+    fecha_modificacion timestamp default current_timestamp,
+    usuario_modificacion varchar(50)
+);
+
+-- Creamos el procedimiento.
+
+delimiter //
+
+
+create procedure actualizar_usuario(
+    in p_id_usuario int,
+    in p_nuevo_username varchar(40),
+    in p_nuevo_correo varchar(40),
+    in p_nueva_contraseña varchar(30)
+)
+begin
+    declare v_antiguo_username varchar(40);
+    declare v_antiguo_correo varchar(40);
+    declare v_antigua_contraseña varchar(30);
+    -- obtener los valores actuales
+    select username, correo_electronico, contraseña_usuario
+    into v_antiguo_username, v_antiguo_correo, v_antigua_contraseña
+    from usuarios
+    where id_usuario = p_id_usuario;
+    -- actualizar la información del usuario
+    update usuarios
+    set username = p_nuevo_username,
+        correo_electronico = p_nuevo_correo,
+        contraseña_usuario = p_nueva_contraseña
+    where id_usuario = p_id_usuario;
+    -- registrar los cambios en la tabla de auditoría
+    if v_antiguo_username != p_nuevo_username then
+        insert into auditoria_usuarios (id_usuario, campo_modificado, valor_anterior, valor_nuevo, usuario_modificacion)
+        values (p_id_usuario, 'username', v_antiguo_username, p_nuevo_username, user());
+    end if;
+    if v_antiguo_correo != p_nuevo_correo then
+        insert into auditoria_usuarios (id_usuario, campo_modificado, valor_anterior, valor_nuevo, usuario_modificacion)
+        values (p_id_usuario, 'correo_electronico', v_antiguo_correo, p_nuevo_correo, user());
+    end if;
+    if v_antigua_contraseña != p_nueva_contraseña then
+        insert into auditoria_usuarios (id_usuario, campo_modificado, valor_anterior, valor_nuevo, usuario_modificacion)
+        values (p_id_usuario, 'contraseña_usuario', '', '', user());
+    end if;
+end //
+
+delimiter ;
+
+-- Llamamos al procedimiento.
+call actualizar_usuario(1, 'Nuevo_username', 'Nuevo_correo@example.com', 'Nueva_contraseña');
+
+select * from auditoria_usuarios;
