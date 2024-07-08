@@ -936,11 +936,12 @@ call validarDisponibilidadStock(9);
 
 
 /*-------------------------------------------------------------------------------------------------
-									PORTAFOLIO: TRANSACCIONES
+					PORTAFOLIO: TRANSACCIONES
 --------------------------------------------------------------------------------------------------*/
-/*-------------------------------------------------------------------------------------------------*/
-#1.- Actualización de inventario(cantidad de cupones) y registro de transacción
 
+/*-------------------------------------------------------------------------------------------------
+	#1.- Actualización de inventario(cantidad de cupones) y registro de transacción
+--------------------------------------------------------------------------------------------------*/
 -- Creacion de la tabla registro_transaccion
 create table registro_transaccion (
 id_registro int primary key auto_increment not null,
@@ -977,7 +978,7 @@ DELIMITER ;
 
 
 /*------------------------------------------------------------------------------------------------
-					2.- TRANSFERENCIAS DE FONDOS Y ACTUALIZACION 
+			2.- TRANSFERENCIAS DE FONDOS Y ACTUALIZACION 
 --------------------------------------------------------------------------------------------------*/
 
 -- Vemos los usuarios que tengan cupones
@@ -1024,9 +1025,9 @@ DELIMITER ;
 select * from registro_de_transaccion_de_cupones;
 
 
-/*-------------------------------------------------------------------------------------------------*/
-#3.- Cambio de estado de un cupon y actualización de registros 
-
+/*-------------------------------------------------------------------------------------------------
+		#3.- Cambio de estado de un cupon y actualización de registros 
+-------------------------------------------------------------------------------------------------*/
 -- Actualizar tabla cupones
 alter table cupones add column estado varchar(20) default 'Activo';
 
@@ -1051,8 +1052,9 @@ select * from cupones;
 select * from registro_transaccion; 
 
 
-/*------------------------------------------------------------------------------------------------*/
-#4.- Actualizacion de informacion del cliente y registro de auditoria
+/*------------------------------------------------------------------------------------------------
+		4.- Actualizacion de informacion del cliente y registro de auditoria
+-------------------------------------------------------------------------------------------------- */
 -- Creamos la tabla de auditoria.
 
 create table auditoria_usuarios (
@@ -1112,3 +1114,36 @@ delimiter ;
 call actualizar_usuario(1, 'Nuevo_username', 'Nuevo_correo@example.com', 'Nueva_contraseña');
 
 select * from auditoria_usuarios;
+
+
+/* ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------        
+					5.- Eliminación de un registro y registro de accion
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------        
+*/
+create table cupones_eliminados(
+	id_registro int primary key auto_increment,
+    fk_cupon int,
+    fecha_eliminacion date);
+    
+    describe cupones;
+    
+    delimiter //
+create procedure eliminarCupones(in cupon int)
+    begin
+    set @fecha = now();
+    
+    start transaction;
+		insert into cupones_eliminados(fk_cupon,fecha_eliminacion) values
+        (cupon, @fecha);
+        delete from usuario_cupon where fk_cupon = cupon;
+		delete from cupones where id_cupon = cupon;
+	commit;
+    
+end//
+
+
+call eliminarCupones(2);
+
+select * from cupones_eliminados;
+select * from cupones;
+select * from usuario_cupon;
